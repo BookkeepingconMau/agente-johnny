@@ -146,7 +146,6 @@ const MERCHANT_DICT = [
 const DEPOSIT_CATEGORIES    = ["Revenue - Services","Revenue - Sales","Revenue - Catering","Revenue - Construction","Revenue - Landscaping","Revenue - Trucking","Revenue - HVAC","Revenue - Roofing","Revenue - Cleaning","Loan Proceeds","Owner Investment","Transfer In","Refund Received","Other Income","ASK TO CLIENT"];
 const WITHDRAWAL_CATEGORIES = ["COGS - Materials","COGS - Labor","COGS - Fuel (Production)","COGS - Food & Beverage","Subcontractor Expense","Payroll & Wages","Advertising & Marketing","Bank Fees","Insurance","Loan Payment","Meals & Entertainment","Office Supplies","Operating Expenses - Delivery & Postage","Operating Expenses - Parking","Operating Expenses - Supplies","Rent & Lease","Repairs & Maintenance","Software & Subscriptions","Taxes & Licenses","Telephone & Internet","Transfer Out","Travel & Transportation","Uniforms","Utilities","Vehicle - Fuel (Non-Production)","Vehicle - Maintenance","Owner Draw","ASK TO CLIENT"];
 
-// ─── TRANSFER DETECTION ───────────────────────────────────────────────────────
 const TRANSFER_IN_KEYWORDS  = ["INTERNET XFER FROM","XFER FROM CHKG","XFER FROM SAV","TRANSFER FROM","ONLINE TRANSFER FROM","FUNDS TRANSFER IN","MOBILE XFER FROM"];
 const TRANSFER_OUT_KEYWORDS = ["INTERNET XFER TO","XFER TO CHKG","XFER TO SAV","TRANSFER TO","ONLINE TRANSFER TO","FUNDS TRANSFER OUT","MOBILE XFER TO"];
 
@@ -162,17 +161,13 @@ function detectTransfer(concept) {
   return { category: cat, level:"TRANSFER", enrichedConcept: label };
 }
 
-// ─── CHECK DETECTION ──────────────────────────────────────────────────────────
 function detectCheck(concept) {
   const upper = concept.toUpperCase();
   if (!upper.includes("CHECK") && !upper.match(/\bCHK\b/) && !upper.match(/\bCK#?\b/)) return null;
-  // Exclude card purchases masquerading as checks
   const FALSE_CHECK = ["CARD PUR","CARD PURCHASE","POS PUR","DEBIT PUR","ACH","ONLINE","BILL PAY","PAYMENT TO","DIRECT"];
   if (FALSE_CHECK.some(k => upper.includes(k))) return null;
-  // Exclude known merchants that banks sometimes label "CHECK"
   const FALSE_MERCHANTS = ["PIKEPASS","PIKE PASS","VIVINT","AT&T","ATT ","VERIZON","SPECTRUM","COMCAST","HISCOX","ALLSTATE","STATE FARM","GEICO","PROGRESSIVE","TMOBILE","T-MOBILE","METRO PCS","CRICKET","BOOST"];
   if (FALSE_MERCHANTS.some(k => upper.includes(k))) return null;
-  // Require either a check number OR the word CHECK is standalone (not part of "E-CHECK", "ECHECK")
   const numMatch = concept.match(/(?:CHECK|CHK|CK#?)\s*#?\s*(\d+)/i);
   const checkNum = numMatch ? numMatch[1] : null;
   const isEcheck = upper.match(/E-?CHECK|ELECTRONIC CHECK/);
@@ -189,43 +184,28 @@ function detectCheck(concept) {
   return { checkNum, payee, enrichedConcept: parts.join(" ") };
 }
 
-// ─── CATEGORIZATION ENGINE ─────────────────────────────────────────────────────
 function categorize(concept, amount, isDeposit, businessType, learnedMerchants) {
   const upper = concept.toUpperCase();
   const amt   = Math.abs(parseFloat(amount) || 0);
-
-  // 1. Transfer detection — auto from keywords
   const transfer = detectTransfer(concept);
   if (transfer) return transfer;
-
-  // 2. Check detection → always Subcontractor Expense
   if (!isDeposit) {
     const check = detectCheck(concept);
     if (check) return { category:"Subcontractor Expense", level:"CHECK", payee:check.payee, checkNum:check.checkNum, enrichedConcept:check.enrichedConcept };
   }
-
-  // 3. Memory
   for (const [key, cat] of Object.entries(learnedMerchants)) {
     if (upper.includes(key.toUpperCase())) return { category:cat, level:"MEMORY" };
   }
-
-  // 4. Deposits
   if (isDeposit) {
     if (upper.includes("ZELLE") && upper.includes("TRANSFER IN")) return { category:"ASK TO CLIENT", level:"ASK", reason:"Zelle recibido — ¿Revenue o Owner Investment?" };
     return { category:"ASK TO CLIENT", level:"ASK", reason:"Ingreso no identificado" };
   }
-
-  // 5. ATM always ASK
   if (upper.includes("ATM CASH") || upper.includes("ATM W/D") || upper.includes("CUSTOMER WITHDRAWAL")) {
     return { category:"ASK TO CLIENT", level:"ASK", reason:"ATM — ¿Owner Draw o gasto en efectivo?" };
   }
-
-  // 6. Zelle out always ASK
   if (upper.includes("ZELLE") && (upper.includes("TRANSFER OUT") || upper.includes("PAYMENT TO"))) {
     return { category:"ASK TO CLIENT", level:"ASK", reason:"Zelle — ¿Subcontractor, Payroll o Personal?" };
   }
-
-  // 7. Dictionary
   for (const entry of MERCHANT_DICT) {
     if (entry.patterns.some(p => upper.includes(p.toUpperCase()))) {
       if (entry.amountRule?.under15 && amt < 15) return { category:entry.amountRule.under15, level:"HARD" };
@@ -236,11 +216,9 @@ function categorize(concept, amount, isDeposit, businessType, learnedMerchants) 
       return { category:entry.category, level:"HARD" };
     }
   }
-
   return { category:"ASK TO CLIENT", level:"ASK", reason:"Merchant no identificado" };
 }
 
-// ─── CLAUDE API ────────────────────────────────────────────────────────────────
 async function callClaude(messages, system) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST", headers:{"Content-Type":"application/json"},
@@ -292,12 +270,10 @@ async function extractBalances(b64) {
   } catch { return null; }
 }
 
-// ─── STORAGE ───────────────────────────────────────────────────────────────────
 const sc = async (id) => { try { const r=await window.storage.get(`client:${id}`); return r?JSON.parse(r.value):null; } catch { return null; } };
 const ss = async (id,d) => { try { await window.storage.set(`client:${id}`,JSON.stringify(d)); } catch {} };
 const sl = async () => { try { const r=await window.storage.list("client:"); return r?.keys||[]; } catch { return []; } };
 
-// ─── APP ───────────────────────────────────────────────────────────────────────
 export default function App() {
   const [screen, setScreen]           = useState("home");
   const [clients, setClients]         = useState([]);
@@ -313,7 +289,7 @@ export default function App() {
   const [dragOver, setDragOver]       = useState(false);
   const [showCopyModal, setShowCopyModal] = useState(null);
   const [statementBalances, setStatementBalances] = useState(null);
-  const [adjustments, setAdjustments] = useState([]); // [{desc, amount, type, cat}]
+  const [adjustments, setAdjustments] = useState([]);
   const [adjDesc, setAdjDesc] = useState("");
   const [adjAmt, setAdjAmt] = useState("");
   const [adjType, setAdjType] = useState("WITHDRAWAL");
@@ -329,7 +305,6 @@ export default function App() {
     for (const k of keys) { const d=await sc(k.replace("client:","")); if(d) loaded.push({id:k.replace("client:",""),...d}); }
     setClients(loaded);
   }
-
 
   async function createClient() {
     if (!newName.trim() || !newType) return;
@@ -426,7 +401,6 @@ export default function App() {
   const memHits      = transactions.filter(r=>r.level==="MEMORY").length;
   const askPct       = transactions.length ? Math.round(asks.length/transactions.length*100) : 0;
 
-  // Build check report: group by payee
   const checkReport = checks.reduce((acc, r) => {
     const name = r.payee || `Sin nombre (Cheque #${r.checkNum||"?"})`;
     if (!acc[name]) acc[name] = { count:0, total:0, checks:[] };
@@ -438,30 +412,31 @@ export default function App() {
   }, {});
   const checkReportRows = Object.entries(checkReport).sort((a,b)=>b[1].total-a[1].total);
 
+  // ── UPDATED STYLES — Blue theme ──
   const S = {
-    app:{minHeight:"100vh",background:"#f7f6f2",fontFamily:"'DM Sans',system-ui,sans-serif",color:"#1a1a1a"},
-    nav:{background:"#1a1a1a",padding:"0 28px",height:52,display:"flex",alignItems:"center",justifyContent:"space-between"},
+    app:{minHeight:"100vh",background:"#0d2b5e",fontFamily:"'DM Sans',system-ui,sans-serif",color:"#f0f4ff"},
+    nav:{background:"#071a3e",padding:"0 28px",height:52,display:"flex",alignItems:"center",justifyContent:"space-between",borderBottom:"1px solid rgba(255,255,255,0.08)"},
     page:{maxWidth:940,margin:"0 auto",padding:"30px 20px"},
-    h1:{fontSize:26,fontWeight:700,letterSpacing:"-0.5px",marginBottom:6},
-    sub:{color:"#666",fontSize:13},
-    card:{background:"#fff",borderRadius:12,border:"1px solid #e8e4dc",padding:20,marginBottom:14},
+    h1:{fontSize:26,fontWeight:700,letterSpacing:"-0.5px",marginBottom:6,color:"#ffffff"},
+    sub:{color:"#8aadff",fontSize:13},
+    card:{background:"rgba(255,255,255,0.07)",backdropFilter:"blur(8px)",borderRadius:12,border:"1px solid rgba(255,255,255,0.12)",padding:20,marginBottom:14},
     btn:{padding:"9px 20px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:600,transition:"all 0.15s"},
-    btnPrimary:{background:"#1a1a1a",color:"#fff"},
-    btnGold:{background:"#c8a96e",color:"#fff"},
-    btnOutline:{background:"transparent",color:"#1a1a1a",border:"1px solid #ccc"},
+    btnPrimary:{background:"#ffffff",color:"#0d2b5e"},
+    btnGold:{background:"#4a90e2",color:"#fff"},
+    btnOutline:{background:"transparent",color:"#c8dcff",border:"1px solid rgba(255,255,255,0.25)"},
     btnSm:{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:600},
-    input:{width:"100%",padding:"9px 13px",borderRadius:8,border:"1px solid #ddd",fontSize:13,outline:"none",fontFamily:"inherit"},
-    label:{fontSize:11,fontWeight:700,color:"#888",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:5,display:"block"},
+    input:{width:"100%",padding:"9px 13px",borderRadius:8,border:"1px solid rgba(255,255,255,0.2)",fontSize:13,outline:"none",fontFamily:"inherit",background:"rgba(255,255,255,0.1)",color:"#f0f4ff"},
+    label:{fontSize:11,fontWeight:700,color:"#8aadff",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:5,display:"block"},
   };
 
   const levelColor = l => ({
-    HARD:    {bg:"#dcfce7",color:"#166534"},
-    MEMORY:  {bg:"#dbeafe",color:"#1e40af"},
-    BUSINESS:{bg:"#f3e8ff",color:"#6b21a8"},
-    RESOLVED:{bg:"#fef9c3",color:"#713f12"},
-    TRANSFER:{bg:"#e0f2fe",color:"#0369a1"},
-    CHECK:   {bg:"#fef3c7",color:"#92400e"},
-  }[l] || {bg:"#fee2e2",color:"#991b1b"});
+    HARD:    {bg:"#1a4731",color:"#6ee7b7"},
+    MEMORY:  {bg:"#1e3a6e",color:"#93c5fd"},
+    BUSINESS:{bg:"#3b1f6e",color:"#c4b5fd"},
+    RESOLVED:{bg:"#4a3800",color:"#fcd34d"},
+    TRANSFER:{bg:"#0c3a5e",color:"#7dd3fc"},
+    CHECK:   {bg:"#4a2800",color:"#fbbf24"},
+  }[l] || {bg:"#5e1a1a",color:"#fca5a5"});
 
   return (
     <div style={S.app}>
@@ -469,29 +444,39 @@ export default function App() {
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Playfair+Display:wght@700&display=swap');
         *{box-sizing:border-box;margin:0;padding:0}
         button:hover{opacity:0.85}
-        input:focus{border-color:#c8a96e!important;box-shadow:0 0 0 3px rgba(200,169,110,0.12)}
-        .cc:hover{background:#fafaf8!important;border-color:#c8a96e!important;cursor:pointer}
-        .btype{padding:8px 12px;border-radius:8px;border:1px solid #e8e4dc;background:#fff;cursor:pointer;font-family:inherit;font-size:12px;transition:all 0.15s}
-        .btype:hover,.btype.sel{border-color:#c8a96e;background:#fffbf4;font-weight:600}
-        .drop{border:2px dashed #e8e4dc;border-radius:12px;padding:48px 28px;text-align:center;cursor:pointer;transition:all 0.2s}
-        .drop:hover,.drop.over{border-color:#c8a96e;background:#fffbf4}
-        .ropt{padding:8px 13px;border-radius:8px;border:1px solid #e8e4dc;background:#fff;cursor:pointer;font-size:12px;font-family:inherit;transition:all 0.15s}
-        .ropt:hover{border-color:#c8a96e;background:#fffbf4}
-        .tr:hover{background:#fafaf8}
-        ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:#ddd;border-radius:2px}
+        input:focus{border-color:#4a90e2!important;box-shadow:0 0 0 3px rgba(74,144,226,0.25)}
+        input::placeholder{color:rgba(255,255,255,0.35)}
+        select option{background:#0d2b5e;color:#f0f4ff}
+        .cc:hover{background:rgba(255,255,255,0.1)!important;border-color:#4a90e2!important;cursor:pointer}
+        .btype{padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);cursor:pointer;font-family:inherit;font-size:12px;transition:all 0.15s;color:#c8dcff}
+        .btype:hover,.btype.sel{border-color:#4a90e2;background:rgba(74,144,226,0.2);font-weight:600;color:#fff}
+        .drop{border:2px dashed rgba(255,255,255,0.2);border-radius:12px;padding:48px 28px;text-align:center;cursor:pointer;transition:all 0.2s}
+        .drop:hover,.drop.over{border-color:#4a90e2;background:rgba(74,144,226,0.1)}
+        .ropt{padding:8px 13px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);cursor:pointer;font-size:12px;font-family:inherit;transition:all 0.15s;color:#c8dcff}
+        .ropt:hover{border-color:#4a90e2;background:rgba(74,144,226,0.2);color:#fff}
+        .tr:hover{background:rgba(255,255,255,0.04)}
+        ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.2);border-radius:2px}
         @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
       `}</style>
 
       {/* NAV */}
       <div style={S.nav}>
-        <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700,color:"#f7f6f2"}}>
-          Wave<span style={{color:"#c8a96e"}}>Book</span>
-          <span style={{fontSize:11,color:"#555",fontFamily:"'DM Sans',sans-serif",fontWeight:400,marginLeft:8}}>v5.0 · 14 tipos · 300+ merchants · Transfers automáticos</span>
+        <div style={{display:"flex",alignItems:"center",gap:16}}>
+          <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700,color:"#ffffff"}}>
+            Wave<span style={{color:"#4a90e2"}}>Book</span>
+            <span style={{fontSize:11,color:"#5577aa",fontFamily:"'DM Sans',sans-serif",fontWeight:400,marginLeft:8}}>v5.0 · 14 tipos · 300+ merchants</span>
+          </div>
+          {/* Partners badge */}
+          <div style={{display:"flex",gap:6,alignItems:"center",marginLeft:8}}>
+            <span style={{background:"rgba(74,144,226,0.25)",border:"1px solid rgba(74,144,226,0.4)",borderRadius:20,padding:"3px 10px",fontSize:11,color:"#93c5fd",fontWeight:600}}>👩‍💼 Leonor</span>
+            <span style={{color:"#4a5568",fontSize:11}}>·</span>
+            <span style={{background:"rgba(74,144,226,0.25)",border:"1px solid rgba(74,144,226,0.4)",borderRadius:20,padding:"3px 10px",fontSize:11,color:"#93c5fd",fontWeight:600}}>👩‍💼 Silvya</span>
+          </div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
-          {clientData&&<span style={{color:"#888",fontSize:12}}>{clientData.name}</span>}
-          <button style={{...S.btn,background:"#2a2a2a",color:"#f7f6f2",padding:"5px 14px",fontSize:11,border:"1px solid #3a3a3a"}} onClick={()=>{setScreen("home");setFile(null);setTransactions([])}}>
-            👥 Clientes {clients.length>0&&<span style={{background:"#c8a96e",color:"#fff",borderRadius:10,padding:"1px 6px",fontSize:10,marginLeft:5}}>{clients.length}</span>}
+          {clientData&&<span style={{color:"#5577aa",fontSize:12}}>{clientData.name}</span>}
+          <button style={{...S.btn,background:"rgba(255,255,255,0.08)",color:"#c8dcff",padding:"5px 14px",fontSize:11,border:"1px solid rgba(255,255,255,0.15)"}} onClick={()=>{setScreen("home");setFile(null);setTransactions([])}}>
+            👥 Clientes {clients.length>0&&<span style={{background:"#4a90e2",color:"#fff",borderRadius:10,padding:"1px 6px",fontSize:10,marginLeft:5}}>{clients.length}</span>}
           </button>
         </div>
       </div>
@@ -499,10 +484,13 @@ export default function App() {
       {/* HOME */}
       {screen==="home"&&(
         <div style={S.page}>
-          <div style={{marginBottom:24}}><h1 style={S.h1}>Bookkeeper Dashboard</h1><p style={S.sub}>14 tipos de negocio · Memoria persistente · Transfers automáticos</p></div>
+          <div style={{marginBottom:24}}>
+            <h1 style={S.h1}>Bookkeeper Dashboard</h1>
+            <p style={S.sub}>14 tipos de negocio · Memoria persistente · Transfers automáticos</p>
+          </div>
 
           <div style={S.card}>
-            <h2 style={{fontSize:15,fontWeight:700,marginBottom:14}}>➕ Nuevo Cliente</h2>
+            <h2 style={{fontSize:15,fontWeight:700,marginBottom:14,color:"#ffffff"}}>➕ Nuevo Cliente</h2>
             <div style={{display:"grid",gap:12,gridTemplateColumns:"1fr"}}>
               <div>
                 <label style={S.label}>Nombre del cliente</label>
@@ -522,27 +510,27 @@ export default function App() {
 
           {clients.length>0&&(
             <div style={S.card}>
-              <h2 style={{fontSize:15,fontWeight:700,marginBottom:14}}>📁 Clientes ({clients.length})</h2>
+              <h2 style={{fontSize:15,fontWeight:700,marginBottom:14,color:"#ffffff"}}>📁 Clientes ({clients.length})</h2>
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
                 {clients.map(c=>{
                   const bt=BUSINESS_TYPES.find(b=>b.id===c.businessType);
                   const ml=Object.keys(c.learnedMerchants||{}).length;
                   return (
-                    <div key={c.id} className="cc" style={{padding:"12px 16px",border:"1px solid #e8e4dc",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"space-between",background:"#fff",transition:"all 0.15s"}} onClick={()=>selectClient(c.id)}>
+                    <div key={c.id} className="cc" style={{padding:"12px 16px",border:"1px solid rgba(255,255,255,0.12)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"space-between",background:"rgba(255,255,255,0.05)",transition:"all 0.15s"}} onClick={()=>selectClient(c.id)}>
                       <div>
-                        <div style={{fontWeight:600,fontSize:14}}>{c.name}</div>
-                        <div style={{color:"#999",fontSize:12,marginTop:2}}>
+                        <div style={{fontWeight:600,fontSize:14,color:"#ffffff"}}>{c.name}</div>
+                        <div style={{color:"#8aadff",fontSize:12,marginTop:2}}>
                           {bt?.icon} {bt?.label} · 🧠 {ml} aprendidas · 📄 {(c.history||[]).length} procesados
                         </div>
                       </div>
-                      <button style={{...S.btn,...S.btnPrimary,fontSize:11,padding:"6px 14px"}}>Abrir →</button>
+                      <button style={{...S.btn,...S.btnGold,fontSize:11,padding:"6px 14px"}}>Abrir →</button>
                     </div>
                   );
                 })}
               </div>
             </div>
           )}
-          {clients.length===0&&<div style={{textAlign:"center",padding:"40px 0",color:"#bbb",fontSize:13}}>Crea tu primer cliente para empezar</div>}
+          {clients.length===0&&<div style={{textAlign:"center",padding:"40px 0",color:"#3a5a8a",fontSize:13}}>Crea tu primer cliente para empezar</div>}
         </div>
       )}
 
@@ -553,16 +541,14 @@ export default function App() {
             <h1 style={S.h1}>{clientData.name}</h1>
             <p style={S.sub}>{BUSINESS_TYPES.find(b=>b.id===clientData.businessType)?.icon} {BUSINESS_TYPES.find(b=>b.id===clientData.businessType)?.label} · 🧠 {Object.keys(clientData.learnedMerchants||{}).length} aprendidas</p>
           </div>
-
-
           <div style={S.card}>
             <div className={`drop${dragOver?" over":""}`}
               onDragOver={e=>{e.preventDefault();setDragOver(true)}} onDragLeave={()=>setDragOver(false)}
               onDrop={e=>{e.preventDefault();setDragOver(false);const f=e.dataTransfer.files[0];if(f?.type==="application/pdf")setFile(f)}}
               onClick={()=>fileRef.current.click()}>
               <div style={{fontSize:36,marginBottom:10}}>📄</div>
-              {file?(<><div style={{fontWeight:600,color:"#c8a96e"}}>{file.name}</div><div style={{color:"#999",fontSize:12,marginTop:3}}>{(file.size/1024).toFixed(0)} KB</div></>)
-                   :(<><div style={{fontWeight:500}}>Arrastra el bank statement aquí</div><div style={{color:"#999",fontSize:12,marginTop:3}}>o click · Solo PDF bancario digital</div></>)}
+              {file?(<><div style={{fontWeight:600,color:"#4a90e2"}}>{file.name}</div><div style={{color:"#8aadff",fontSize:12,marginTop:3}}>{(file.size/1024).toFixed(0)} KB</div></>)
+                   :(<><div style={{fontWeight:500,color:"#c8dcff"}}>Arrastra el bank statement aquí</div><div style={{color:"#5577aa",fontSize:12,marginTop:3}}>o click · Solo PDF bancario digital</div></>)}
               <input ref={fileRef} type="file" accept=".pdf" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f)setFile(f)}} />
             </div>
             {file&&(
@@ -572,14 +558,13 @@ export default function App() {
               </div>
             )}
           </div>
-
           {Object.keys(clientData.learnedMerchants||{}).length>0&&(
             <div style={S.card}>
-              <div style={{fontSize:12,fontWeight:700,marginBottom:10,color:"#666"}}>🧠 MEMORIA ({Object.keys(clientData.learnedMerchants).length} reglas)</div>
+              <div style={{fontSize:12,fontWeight:700,marginBottom:10,color:"#8aadff"}}>🧠 MEMORIA ({Object.keys(clientData.learnedMerchants).length} reglas)</div>
               <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
                 {Object.entries(clientData.learnedMerchants).map(([k,v])=>(
-                  <div key={k} style={{background:"#f7f6f2",border:"1px solid #e8e4dc",borderRadius:6,padding:"3px 9px",fontSize:11}}>
-                    <span style={{fontWeight:600}}>{k}</span> → <span style={{color:"#c8a96e"}}>{v}</span>
+                  <div key={k} style={{background:"rgba(74,144,226,0.15)",border:"1px solid rgba(74,144,226,0.3)",borderRadius:6,padding:"3px 9px",fontSize:11,color:"#c8dcff"}}>
+                    <span style={{fontWeight:600}}>{k}</span> → <span style={{color:"#4a90e2"}}>{v}</span>
                   </div>
                 ))}
               </div>
@@ -592,8 +577,8 @@ export default function App() {
       {screen==="extracting"&&(
         <div style={{...S.page,textAlign:"center",paddingTop:80}}>
           <div style={{fontSize:48,marginBottom:16,display:"inline-block",animation:"spin 2s linear infinite"}}>⚙️</div>
-          <h2 style={{fontSize:20,fontWeight:700,marginBottom:8}}>Procesando...</h2>
-          <p style={{color:"#888",fontSize:13}}>{progress}</p>
+          <h2 style={{fontSize:20,fontWeight:700,marginBottom:8,color:"#ffffff"}}>Procesando...</h2>
+          <p style={{color:"#8aadff",fontSize:13}}>{progress}</p>
         </div>
       )}
 
@@ -613,33 +598,32 @@ export default function App() {
               <div><h1 style={S.h1}>Resolver Ambigüedades</h1><p style={S.sub}>{currentAsk+1} de {askQueue.length} · Respuestas se guardan en memoria</p></div>
               <button style={{...S.btn,...S.btnOutline,fontSize:12}} onClick={()=>setScreen("review")}>Saltar todos →</button>
             </div>
-            <div style={{height:4,background:"#e8e4dc",borderRadius:2,marginBottom:22,overflow:"hidden"}}>
-              <div style={{height:"100%",background:"#c8a96e",width:`${(currentAsk/askQueue.length)*100}%`,transition:"width 0.3s"}} />
+            <div style={{height:4,background:"rgba(255,255,255,0.1)",borderRadius:2,marginBottom:22,overflow:"hidden"}}>
+              <div style={{height:"100%",background:"#4a90e2",width:`${(currentAsk/askQueue.length)*100}%`,transition:"width 0.3s"}} />
             </div>
             <div style={S.card}>
-              <div style={{background:"#f7f6f2",borderRadius:8,padding:14,marginBottom:16}}>
+              <div style={{background:"rgba(255,255,255,0.05)",borderRadius:8,padding:14,marginBottom:16}}>
                 <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
-                  <div><span style={S.label}>FECHA</span><div style={{fontWeight:600}}>{ask.date}</div></div>
-                  <div><span style={S.label}>MONTO</span><div style={{fontWeight:600,color:isDeposit?"#166534":"#991b1b"}}>{isDeposit?"+":""}{ask.amount}</div></div>
-                  <div style={{flex:1}}><span style={S.label}>CONCEPTO</span><div style={{fontWeight:600}}>{ask.concept}</div></div>
+                  <div><span style={S.label}>FECHA</span><div style={{fontWeight:600,color:"#fff"}}>{ask.date}</div></div>
+                  <div><span style={S.label}>MONTO</span><div style={{fontWeight:600,color:isDeposit?"#6ee7b7":"#fca5a5"}}>{isDeposit?"+":""}{ask.amount}</div></div>
+                  <div style={{flex:1}}><span style={S.label}>CONCEPTO</span><div style={{fontWeight:600,color:"#fff"}}>{ask.concept}</div></div>
                 </div>
-                {ask.reason&&<div style={{marginTop:8,fontSize:12,color:"#888"}}>💡 {ask.reason}</div>}
+                {ask.reason&&<div style={{marginTop:8,fontSize:12,color:"#8aadff"}}>💡 {ask.reason}</div>}
               </div>
-
               {isZelle&&!isDeposit&&zelleName&&(
                 <div style={{marginBottom:16}}>
-                  <span style={S.label}>ZELLE A: <strong style={{color:"#1a1a1a"}}>{zelleName}</strong></span>
+                  <span style={S.label}>ZELLE A: <strong style={{color:"#fff"}}>{zelleName}</strong></span>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
                     {[{l:"👷 Subcontractor",c:"Subcontractor Expense"},{l:"💼 Payroll",c:"Payroll & Wages"},{l:"🏠 Owner Draw",c:"Owner Draw"},{l:"📦 COGS Materials",c:"COGS - Materials"},{l:"🔄 Transfer Out",c:"Transfer Out"},{l:"🍽️ Meals",c:"Meals & Entertainment"}].map(o=>(
                       <button key={o.c} className="ropt" onClick={()=>resolveAsk(o.c,true,zelleName)}>{o.l}</button>
                     ))}
                   </div>
-                  <div style={{fontSize:11,color:"#bbb",marginTop:5}}>✓ Se guardará en memoria: "{zelleName}"</div>
+                  <div style={{fontSize:11,color:"#5577aa",marginTop:5}}>✓ Se guardará en memoria: "{zelleName}"</div>
                 </div>
               )}
               {isZelle&&isDeposit&&zelleName&&(
                 <div style={{marginBottom:16}}>
-                  <span style={S.label}>ZELLE DE: <strong style={{color:"#1a1a1a"}}>{zelleName}</strong></span>
+                  <span style={S.label}>ZELLE DE: <strong style={{color:"#fff"}}>{zelleName}</strong></span>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
                     {[{l:"💰 Revenue Services",c:"Revenue - Services"},{l:"💰 Revenue Sales",c:"Revenue - Sales"},{l:"🏦 Owner Investment",c:"Owner Investment"},{l:"🔄 Transfer In",c:"Transfer In"},{l:"📤 Loan Proceeds",c:"Loan Proceeds"}].map(o=>(
                       <button key={o.c} className="ropt" onClick={()=>resolveAsk(o.c,true,zelleName)}>{o.l}</button>
@@ -667,7 +651,7 @@ export default function App() {
               </div>
               <div style={{display:"flex",justifyContent:"space-between"}}>
                 <button style={{...S.btn,...S.btnOutline,fontSize:11}} onClick={()=>{if(currentAsk+1<askQueue.length)setCurrentAsk(currentAsk+1);else setScreen("review");}}>Dejar como ASK TO CLIENT</button>
-                <span style={{fontSize:11,color:"#bbb"}}>{askQueue.length-currentAsk-1} restantes</span>
+                <span style={{fontSize:11,color:"#5577aa"}}>{askQueue.length-currentAsk-1} restantes</span>
               </div>
             </div>
           </div>
@@ -679,26 +663,26 @@ export default function App() {
         <div style={S.page}>
           <div style={{display:"flex",gap:10,marginBottom:18,flexWrap:"wrap"}}>
             {[
-              {l:"Total",       v:transactions.length, c:"#1a1a1a"},
-              {l:"Deposits",    v:deposits.length,     c:"#166534"},
-              {l:"Withdrawals", v:withdrawals.length,  c:"#991b1b"},
-              {l:"Transfers",   v:transfers.length,    c:"#0369a1"},
-              {l:"Cheques",     v:checks.length,       c:"#b45309"},
-              {l:"Auto-cat.",   v:autoResolved,        c:"#6b21a8"},
-              {l:"Memoria",     v:memHits,             c:"#1e40af"},
-              {l:"ASK",         v:`${asks.length} (${askPct}%)`, c:askPct>15?"#991b1b":"#92400e"},
+              {l:"Total",       v:transactions.length, c:"#ffffff"},
+              {l:"Deposits",    v:deposits.length,     c:"#6ee7b7"},
+              {l:"Withdrawals", v:withdrawals.length,  c:"#fca5a5"},
+              {l:"Transfers",   v:transfers.length,    c:"#7dd3fc"},
+              {l:"Cheques",     v:checks.length,       c:"#fbbf24"},
+              {l:"Auto-cat.",   v:autoResolved,        c:"#c4b5fd"},
+              {l:"Memoria",     v:memHits,             c:"#93c5fd"},
+              {l:"ASK",         v:`${asks.length} (${askPct}%)`, c:askPct>15?"#fca5a5":"#fbbf24"},
             ].map(s=>(
               <div key={s.l} style={{...S.card,flex:1,minWidth:80,marginBottom:0,padding:"10px 14px"}}>
-                <div style={{fontSize:10,fontWeight:700,color:"#aaa",letterSpacing:1,marginBottom:3}}>{s.l}</div>
+                <div style={{fontSize:10,fontWeight:700,color:"#5577aa",letterSpacing:1,marginBottom:3}}>{s.l}</div>
                 <div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div>
               </div>
             ))}
           </div>
 
-          {askPct>15&&<div style={{background:"#fef3c7",border:"1px solid #f59e0b",borderRadius:8,padding:"9px 14px",marginBottom:12,fontSize:12,color:"#92400e"}}>⚠️ <strong>ALERTA:</strong> {askPct}% supera el límite de 15%</div>}
+          {askPct>15&&<div style={{background:"rgba(251,191,36,0.15)",border:"1px solid rgba(251,191,36,0.4)",borderRadius:8,padding:"9px 14px",marginBottom:12,fontSize:12,color:"#fbbf24"}}>⚠️ <strong>ALERTA:</strong> {askPct}% supera el límite de 15%</div>}
 
           <div style={{display:"flex",gap:7,marginBottom:12,flexWrap:"wrap",alignItems:"center",justifyContent:"space-between"}}>
-            <span style={{fontSize:11,color:"#999"}}>XFER = transfer auto · CHK = cheque → Subcontractor · Click en CATEGORY para editar</span>
+            <span style={{fontSize:11,color:"#5577aa"}}>XFER = transfer auto · CHK = cheque → Subcontractor · Click en CATEGORY para editar</span>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               <button style={{...S.btn,...S.btnOutline,fontSize:11}} onClick={()=>openCopy("ingresos")}>📋 Copiar INGRESOS</button>
               <button style={{...S.btn,...S.btnOutline,fontSize:11}} onClick={()=>openCopy("gastos")}>📋 Copiar GASTOS</button>
@@ -715,38 +699,37 @@ export default function App() {
           )}
           {withdrawals.length>0&&(
             <div style={{...S.card,padding:0,overflow:"hidden",marginBottom:12}}>
-              <div style={{background:"#991b1b",color:"#fff",padding:"8px 14px",fontSize:11,fontWeight:700,letterSpacing:1}}>▼ WITHDRAWALS ({withdrawals.length})</div>
+              <div style={{background:"#7f1d1d",color:"#fff",padding:"8px 14px",fontSize:11,fontWeight:700,letterSpacing:1}}>▼ WITHDRAWALS ({withdrawals.length})</div>
               <TableRows rows={withdrawals} allRows={transactions} updateCategory={updateCategory} cats={WITHDRAWAL_CATEGORIES} levelColor={levelColor} />
             </div>
           )}
 
           {checkReportRows.length>0&&(
             <div style={{...S.card,padding:0,overflow:"hidden",marginBottom:12}}>
-              <div style={{background:"#92400e",color:"#fff",padding:"8px 14px",fontSize:11,fontWeight:700,letterSpacing:1}}>
+              <div style={{background:"#78350f",color:"#fff",padding:"8px 14px",fontSize:11,fontWeight:700,letterSpacing:1}}>
                 📋 REPORTE DE CHEQUES — Subcontractors ({checks.length} cheques · Total: ${checks.reduce((s,r)=>s+Math.abs(parseFloat(r.amount)||0),0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})})
               </div>
               <div style={{padding:0}}>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 80px 110px",padding:"7px 14px",background:"#f7f6f2",borderBottom:"1px solid #e8e4dc"}}>
-                  {["NOMBRE / PAYEE","# CHEQUES","TOTAL PAGADO"].map(h=><div key={h} style={{fontSize:10,fontWeight:700,color:"#aaa",letterSpacing:1}}>{h}</div>)}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 80px 110px",padding:"7px 14px",background:"rgba(255,255,255,0.05)",borderBottom:"1px solid rgba(255,255,255,0.08)"}}>
+                  {["NOMBRE / PAYEE","# CHEQUES","TOTAL PAGADO"].map(h=><div key={h} style={{fontSize:10,fontWeight:700,color:"#5577aa",letterSpacing:1}}>{h}</div>)}
                 </div>
                 <div style={{maxHeight:300,overflowY:"auto"}}>
                   {checkReportRows.map(([name, data])=>(
-                    <div key={name} className="tr" style={{display:"grid",gridTemplateColumns:"1fr 80px 110px",padding:"9px 14px",borderBottom:"1px solid #f0ede8",alignItems:"center"}}>
-                      <div style={{fontWeight:600,fontSize:13}}>{name}</div>
-                      <div style={{fontSize:13,color:"#666",textAlign:"center"}}>{data.count}</div>
-                      <div style={{fontSize:13,fontWeight:700,color:"#92400e",textAlign:"right"}}>${data.total.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                    <div key={name} className="tr" style={{display:"grid",gridTemplateColumns:"1fr 80px 110px",padding:"9px 14px",borderBottom:"1px solid rgba(255,255,255,0.06)",alignItems:"center"}}>
+                      <div style={{fontWeight:600,fontSize:13,color:"#ffffff"}}>{name}</div>
+                      <div style={{fontSize:13,color:"#8aadff",textAlign:"center"}}>{data.count}</div>
+                      <div style={{fontSize:13,fontWeight:700,color:"#fbbf24",textAlign:"right"}}>${data.total.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                     </div>
                   ))}
                 </div>
-                <div style={{padding:"8px 14px",background:"#fef3c7",display:"flex",justifyContent:"flex-end",gap:8,alignItems:"center"}}>
-                  <span style={{fontSize:11,color:"#92400e",fontWeight:600}}>Total en cheques:</span>
-                  <span style={{fontSize:15,fontWeight:700,color:"#92400e"}}>${checks.reduce((s,r)=>s+Math.abs(parseFloat(r.amount)||0),0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                <div style={{padding:"8px 14px",background:"rgba(251,191,36,0.1)",display:"flex",justifyContent:"flex-end",gap:8,alignItems:"center"}}>
+                  <span style={{fontSize:11,color:"#fbbf24",fontWeight:600}}>Total en cheques:</span>
+                  <span style={{fontSize:15,fontWeight:700,color:"#fbbf24"}}>${checks.reduce((s,r)=>s+Math.abs(parseFloat(r.amount)||0),0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                 </div>
               </div>
             </div>
           )}
 
-          {/* CONCILIACIÓN */}
           {statementBalances&&(()=>{
             const adjDep  = adjustments.filter(a=>a.type==="DEPOSIT").reduce((s,a)=>s+a.amount,0);
             const adjWith = adjustments.filter(a=>a.type==="WITHDRAWAL").reduce((s,a)=>s+a.amount,0);
@@ -767,14 +750,14 @@ export default function App() {
             }
             return (
               <div style={{...S.card,padding:0,overflow:"hidden",marginBottom:12}}>
-                <div style={{background:allOk?"#166534":"#991b1b",color:"#fff",padding:"8px 14px",fontSize:11,fontWeight:700,letterSpacing:1}}>
+                <div style={{background:allOk?"#166534":"#7f1d1d",color:"#fff",padding:"8px 14px",fontSize:11,fontWeight:700,letterSpacing:1}}>
                   {allOk ? "✅ CONCILIACIÓN — CUADRA PERFECTO" : "⚠️ CONCILIACIÓN — HAY DIFERENCIAS"}
                 </div>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                   <thead>
-                    <tr style={{background:"#f7f6f2"}}>
+                    <tr style={{background:"rgba(255,255,255,0.05)"}}>
                       {["","BANK STATEMENT","APP","DIFERENCIA","STATUS"].map((h,i)=>(
-                        <th key={h} style={{padding:"8px 14px",textAlign:i===0?"left":"right",fontSize:10,fontWeight:700,color:"#aaa",letterSpacing:1,borderBottom:"1px solid #e8e4dc"}}>{h}</th>
+                        <th key={h} style={{padding:"8px 14px",textAlign:i===0?"left":"right",fontSize:10,fontWeight:700,color:"#5577aa",letterSpacing:1,borderBottom:"1px solid rgba(255,255,255,0.08)"}}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -785,11 +768,11 @@ export default function App() {
                       {l:"- Withdrawals",     bs:statementBalances.totalWithdrawals + statementBalances.serviceFees, app:appWithdrawals, diff:diffWith},
                       {l:"= Ending Balance",  bs:statementBalances.endingBalance,   app:appEnding,     diff:diffEnd, bold:true},
                     ].map((row,i)=>(
-                      <tr key={i} style={{borderBottom:"1px solid #f0ede8",background:row.bold?"#f7f6f2":"#fff"}}>
-                        <td style={{padding:"9px 14px",fontWeight:row.bold?700:500,fontSize:row.bold?13:12}}>{row.l}</td>
-                        <td style={{padding:"9px 14px",textAlign:"right",fontWeight:600}}>{fmt(row.bs)}</td>
-                        <td style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:"#1e40af"}}>{fmt(row.app)}</td>
-                        <td style={{padding:"9px 14px",textAlign:"right",color:ok(row.diff)?"#166534":"#991b1b",fontWeight:700}}>
+                      <tr key={i} style={{borderBottom:"1px solid rgba(255,255,255,0.06)",background:row.bold?"rgba(255,255,255,0.05)":"transparent"}}>
+                        <td style={{padding:"9px 14px",fontWeight:row.bold?700:500,fontSize:row.bold?13:12,color:"#c8dcff"}}>{row.l}</td>
+                        <td style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:"#fff"}}>{fmt(row.bs)}</td>
+                        <td style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:"#93c5fd"}}>{fmt(row.app)}</td>
+                        <td style={{padding:"9px 14px",textAlign:"right",color:ok(row.diff)?"#6ee7b7":"#fca5a5",fontWeight:700}}>
                           {ok(row.diff) ? "—" : (row.diff>0?"+":"-")+fmt(row.diff)}
                         </td>
                         <td style={{padding:"9px 14px",textAlign:"center",fontSize:16}}>{row.fixed||ok(row.diff) ? "✅" : "❌"}</td>
@@ -797,43 +780,41 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
-
                 {adjustments.length>0&&(
-                  <div style={{padding:"8px 14px",borderTop:"1px solid #e8e4dc"}}>
-                    <div style={{fontSize:10,fontWeight:700,color:"#888",letterSpacing:1,marginBottom:6}}>AJUSTES MANUALES</div>
+                  <div style={{padding:"8px 14px",borderTop:"1px solid rgba(255,255,255,0.08)"}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"#5577aa",letterSpacing:1,marginBottom:6}}>AJUSTES MANUALES</div>
                     {adjustments.map((a,i)=>(
-                      <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0",borderBottom:"1px solid #f5f5f5"}}>
-                        <span style={{color:"#444"}}>{a.type==="DEPOSIT"?"▲":"▼"} {a.desc} — <span style={{color:"#888"}}>{a.cat}</span></span>
+                      <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
+                        <span style={{color:"#c8dcff"}}>{a.type==="DEPOSIT"?"▲":"▼"} {a.desc} — <span style={{color:"#8aadff"}}>{a.cat}</span></span>
                         <div style={{display:"flex",gap:10,alignItems:"center"}}>
-                          <span style={{fontWeight:600,color:a.type==="DEPOSIT"?"#166534":"#991b1b"}}>{a.type==="DEPOSIT"?"+":"-"}{fmt(a.amount)}</span>
-                          <button onClick={()=>setAdjustments(prev=>prev.filter((_,j)=>j!==i))} style={{background:"none",border:"none",cursor:"pointer",color:"#ccc",fontSize:14,padding:0}}>✕</button>
+                          <span style={{fontWeight:600,color:a.type==="DEPOSIT"?"#6ee7b7":"#fca5a5"}}>{a.type==="DEPOSIT"?"+":"-"}{fmt(a.amount)}</span>
+                          <button onClick={()=>setAdjustments(prev=>prev.filter((_,j)=>j!==i))} style={{background:"none",border:"none",cursor:"pointer",color:"#5577aa",fontSize:14,padding:0}}>✕</button>
                         </div>
                       </div>
                     ))}
                   </div>
                 )}
-
                 {!allOk&&(
-                  <div style={{padding:"12px 14px",borderTop:"1px solid #e8e4dc",background:"#fffbf4"}}>
-                    <div style={{fontSize:10,fontWeight:700,color:"#c8a96e",letterSpacing:1,marginBottom:8}}>➕ AGREGAR AJUSTE MANUAL</div>
+                  <div style={{padding:"12px 14px",borderTop:"1px solid rgba(255,255,255,0.08)",background:"rgba(74,144,226,0.08)"}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"#4a90e2",letterSpacing:1,marginBottom:8}}>➕ AGREGAR AJUSTE MANUAL</div>
                     <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end"}}>
                       <div style={{flex:2,minWidth:140}}>
-                        <div style={{fontSize:10,color:"#888",marginBottom:3}}>DESCRIPCIÓN</div>
+                        <div style={{fontSize:10,color:"#8aadff",marginBottom:3}}>DESCRIPCIÓN</div>
                         <input style={{...S.input,fontSize:12}} placeholder="Ej: Fee no capturado" value={adjDesc} onChange={e=>setAdjDesc(e.target.value)} />
                       </div>
                       <div style={{flex:1,minWidth:90}}>
-                        <div style={{fontSize:10,color:"#888",marginBottom:3}}>MONTO</div>
+                        <div style={{fontSize:10,color:"#8aadff",marginBottom:3}}>MONTO</div>
                         <input style={{...S.input,fontSize:12}} placeholder="0.00" value={adjAmt} onChange={e=>setAdjAmt(e.target.value)} />
                       </div>
                       <div style={{flex:1,minWidth:110}}>
-                        <div style={{fontSize:10,color:"#888",marginBottom:3}}>TIPO</div>
+                        <div style={{fontSize:10,color:"#8aadff",marginBottom:3}}>TIPO</div>
                         <select style={{...S.input,fontSize:12}} value={adjType} onChange={e=>setAdjType(e.target.value)}>
                           <option value="WITHDRAWAL">▼ Withdrawal</option>
                           <option value="DEPOSIT">▲ Deposit</option>
                         </select>
                       </div>
                       <div style={{flex:2,minWidth:150}}>
-                        <div style={{fontSize:10,color:"#888",marginBottom:3}}>CATEGORÍA</div>
+                        <div style={{fontSize:10,color:"#8aadff",marginBottom:3}}>CATEGORÍA</div>
                         <select style={{...S.input,fontSize:12}} value={adjCat} onChange={e=>setAdjCat(e.target.value)}>
                           {(adjType==="DEPOSIT"?DEPOSIT_CATEGORIES:WITHDRAWAL_CATEGORIES).filter(c=>c!=="ASK TO CLIENT").map(c=><option key={c} value={c}>{c}</option>)}
                         </select>
@@ -845,7 +826,6 @@ export default function App() {
               </div>
             );
           })()}
-
         </div>
       )}
 
@@ -856,12 +836,12 @@ export default function App() {
         const label = showCopyModal==="ingresos" ? "INGRESOS (Deposits)" : showCopyModal==="gastos" ? "GASTOS (sin cheques)" : "CHEQUES (Subcontractors)";
         const text = buildTableText(rows);
         return (
-          <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.6)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-            <div style={{background:"#fff",borderRadius:16,padding:24,maxWidth:860,width:"100%",maxHeight:"85vh",display:"flex",flexDirection:"column",gap:14}}>
+          <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.75)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+            <div style={{background:"#0d2b5e",border:"1px solid rgba(255,255,255,0.15)",borderRadius:16,padding:24,maxWidth:860,width:"100%",maxHeight:"85vh",display:"flex",flexDirection:"column",gap:14}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <div>
-                  <div style={{fontWeight:700,fontSize:16}}>📋 {label}</div>
-                  <div style={{fontSize:12,color:"#888",marginTop:2}}>{rows.length} filas · Copia y pega directo en Excel</div>
+                  <div style={{fontWeight:700,fontSize:16,color:"#fff"}}>📋 {label}</div>
+                  <div style={{fontSize:12,color:"#8aadff",marginTop:2}}>{rows.length} filas · Copia y pega directo en Excel</div>
                 </div>
                 <button style={{...S.btn,...S.btnOutline,fontSize:12}} onClick={()=>setShowCopyModal(null)}>✕ Cerrar</button>
               </div>
@@ -870,24 +850,24 @@ export default function App() {
                   {copied ? "✅ ¡Copiado!" : "📋 Copiar al portapapeles"}
                 </button>
               </div>
-              <div style={{overflowY:"auto",flex:1,border:"1px solid #e8e4dc",borderRadius:8}}>
+              <div style={{overflowY:"auto",flex:1,border:"1px solid rgba(255,255,255,0.1)",borderRadius:8}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
                   <thead>
-                    <tr style={{background:"#f7f6f2",position:"sticky",top:0}}>
+                    <tr style={{background:"rgba(255,255,255,0.05)",position:"sticky",top:0}}>
                       {["DATE","AMOUNT","*","CONCEPT","CATEGORY"].map(h=>(
-                        <th key={h} style={{padding:"8px 12px",textAlign:"left",fontWeight:700,color:"#888",letterSpacing:1,fontSize:10,borderBottom:"1px solid #e8e4dc"}}>{h}</th>
+                        <th key={h} style={{padding:"8px 12px",textAlign:"left",fontWeight:700,color:"#5577aa",letterSpacing:1,fontSize:10,borderBottom:"1px solid rgba(255,255,255,0.08)"}}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map((r,i)=>(
-                      <tr key={i} style={{borderBottom:"1px solid #f0ede8",background:i%2===0?"#fff":"#fafaf8"}}>
-                        <td style={{padding:"6px 12px",color:"#888"}}>{r.date}</td>
-                        <td style={{padding:"6px 12px",fontWeight:600,color:parseFloat(r.amount)>=0?"#166534":"#991b1b"}}>{r.amount}</td>
-                        <td style={{padding:"6px 12px",color:"#ccc"}}></td>
-                        <td style={{padding:"6px 12px",color:"#444",maxWidth:280,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.concept}</td>
+                      <tr key={i} style={{borderBottom:"1px solid rgba(255,255,255,0.05)",background:i%2===0?"transparent":"rgba(255,255,255,0.02)"}}>
+                        <td style={{padding:"6px 12px",color:"#8aadff"}}>{r.date}</td>
+                        <td style={{padding:"6px 12px",fontWeight:600,color:parseFloat(r.amount)>=0?"#6ee7b7":"#fca5a5"}}>{r.amount}</td>
+                        <td style={{padding:"6px 12px",color:"#3a5a8a"}}></td>
+                        <td style={{padding:"6px 12px",color:"#c8dcff",maxWidth:280,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.concept}</td>
                         <td style={{padding:"6px 12px"}}>
-                          <span style={{background:r.category==="ASK TO CLIENT"?"#fee2e2":"#f0fdf4",color:r.category==="ASK TO CLIENT"?"#991b1b":"#166534",borderRadius:4,padding:"2px 7px",fontSize:10,fontWeight:600,whiteSpace:"nowrap"}}>
+                          <span style={{background:r.category==="ASK TO CLIENT"?"rgba(239,68,68,0.2)":"rgba(110,231,183,0.15)",color:r.category==="ASK TO CLIENT"?"#fca5a5":"#6ee7b7",borderRadius:4,padding:"2px 7px",fontSize:10,fontWeight:600,whiteSpace:"nowrap"}}>
                             {r.category}
                           </span>
                         </td>
@@ -896,7 +876,7 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              <div style={{fontSize:11,color:"#bbb",textAlign:"center"}}>
+              <div style={{fontSize:11,color:"#3a5a8a",textAlign:"center"}}>
                 💡 Abre Excel → click en celda A1 → Ctrl+V (o Cmd+V en Mac)
               </div>
             </div>
@@ -909,7 +889,7 @@ export default function App() {
         <div style={{...S.page,textAlign:"center",paddingTop:60}}>
           <div style={{fontSize:52,marginBottom:14}}>✅</div>
           <h1 style={S.h1}>¡Statement completado!</h1>
-          <p style={{color:"#888",marginTop:6,marginBottom:10,fontSize:13}}>{transactions.length} transacciones · 🔄 {transfers.length} transfers automáticos · 🧠 {Object.keys(clientData?.learnedMerchants||{}).length} en memoria</p>
+          <p style={{color:"#8aadff",marginTop:6,marginBottom:10,fontSize:13}}>{transactions.length} transacciones · 🔄 {transfers.length} transfers automáticos · 🧠 {Object.keys(clientData?.learnedMerchants||{}).length} en memoria</p>
           <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap",marginTop:20}}>
             <button style={{...S.btn,...S.btnOutline}} onClick={()=>{setFile(null);setTransactions([]);setScreen("upload")}}>Otro PDF</button>
             <button style={{...S.btn,...S.btnPrimary}} onClick={()=>{setFile(null);setTransactions([]);setScreen("home")}}>Dashboard</button>
@@ -923,20 +903,20 @@ export default function App() {
 function TableRows({rows,allRows,updateCategory,cats,levelColor}) {
   return (
     <div>
-      <div style={{display:"grid",gridTemplateColumns:"100px 88px 1fr 195px 55px",padding:"7px 14px",background:"#f7f6f2",borderBottom:"1px solid #e8e4dc"}}>
-        {["DATE","AMOUNT","CONCEPT","CATEGORY","NIVEL"].map(h=><div key={h} style={{fontSize:10,fontWeight:700,color:"#aaa",letterSpacing:1}}>{h}</div>)}
+      <div style={{display:"grid",gridTemplateColumns:"100px 88px 1fr 195px 55px",padding:"7px 14px",background:"rgba(255,255,255,0.05)",borderBottom:"1px solid rgba(255,255,255,0.08)"}}>
+        {["DATE","AMOUNT","CONCEPT","CATEGORY","NIVEL"].map(h=><div key={h} style={{fontSize:10,fontWeight:700,color:"#5577aa",letterSpacing:1}}>{h}</div>)}
       </div>
       <div style={{maxHeight:420,overflowY:"auto"}}>
         {rows.map((row,i)=>{
           const globalIdx=allRows.indexOf(row);
           const lci=levelColor(row.level);
           return (
-            <div key={i} className="tr" style={{display:"grid",gridTemplateColumns:"100px 88px 1fr 195px 55px",padding:"7px 14px",borderBottom:"1px solid #f0ede8",alignItems:"center"}}>
-              <div style={{fontSize:12,color:"#888"}}>{row.date}</div>
-              <div style={{fontSize:12,fontWeight:600,color:parseFloat(row.amount)>=0?"#166534":"#991b1b"}}>{parseFloat(row.amount)>=0?"+":""}{row.amount}</div>
-              <div style={{fontSize:11,color:"#444",paddingRight:10,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}} title={row.concept}>{row.concept}</div>
+            <div key={i} className="tr" style={{display:"grid",gridTemplateColumns:"100px 88px 1fr 195px 55px",padding:"7px 14px",borderBottom:"1px solid rgba(255,255,255,0.06)",alignItems:"center"}}>
+              <div style={{fontSize:12,color:"#8aadff"}}>{row.date}</div>
+              <div style={{fontSize:12,fontWeight:600,color:parseFloat(row.amount)>=0?"#6ee7b7":"#fca5a5"}}>{parseFloat(row.amount)>=0?"+":""}{row.amount}</div>
+              <div style={{fontSize:11,color:"#c8dcff",paddingRight:10,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}} title={row.concept}>{row.concept}</div>
               <select value={row.category} onChange={e=>updateCategory(globalIdx,e.target.value)}
-                style={{width:"100%",padding:"3px 5px",border:"1px solid #e8e4dc",borderRadius:5,fontSize:11,fontFamily:"inherit",background:row.category==="ASK TO CLIENT"?"#fee2e2":"#fff",cursor:"pointer"}}>
+                style={{width:"100%",padding:"3px 5px",border:"1px solid rgba(255,255,255,0.15)",borderRadius:5,fontSize:11,fontFamily:"inherit",background:row.category==="ASK TO CLIENT"?"rgba(239,68,68,0.2)":"rgba(255,255,255,0.08)",color:row.category==="ASK TO CLIENT"?"#fca5a5":"#f0f4ff",cursor:"pointer"}}>
                 {cats.map(c=><option key={c} value={c}>{c}</option>)}
               </select>
               <div style={{textAlign:"center"}}>
